@@ -1270,11 +1270,14 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
 struct SurfaceParams {
     bounds: Bounds,
     content_mask: Bounds,
+    format: u32,
+    pad: u32,
 }
 
 var<uniform> surface_locals: SurfaceParams;
 var t_y: texture_2d<f32>;
 var t_cb_cr: texture_2d<f32>;
+var t_cr: texture_2d<f32>;
 var s_surface: sampler;
 
 const ycbcr_to_RGB = mat4x4<f32>(
@@ -1303,16 +1306,24 @@ fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
 
 @fragment
 fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
-    // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
     }
 
-    let y_cb_cr = vec4<f32>(
-        textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r,
-        textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).rg,
-        1.0);
+    let y = textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r;
+    var cb: f32;
+    var cr: f32;
 
+    if (surface_locals.format == 0u) {
+        let cb_cr = textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).rg;
+        cb = cb_cr.r;
+        cr = cb_cr.g;
+    } else {
+        cb = textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).r;
+        cr = textureSampleLevel(t_cr, s_surface, input.texture_position, 0.0).r;
+    }
+
+    let y_cb_cr = vec4<f32>(y, cb, cr, 1.0);
     return ycbcr_to_RGB * y_cb_cr;
 }
 

@@ -51,6 +51,8 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
 struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
+    format: u32,
+    pad: u32,
 }
 
 #[derive(blade_macros::ShaderData)]
@@ -119,7 +121,22 @@ struct ShaderSurfacesData {
     surface_locals: SurfaceParams,
     t_y: gpu::TextureView,
     t_cb_cr: gpu::TextureView,
+    t_cr: gpu::TextureView,
     s_surface: gpu::Sampler,
+}
+
+#[cfg(not(target_os = "macos"))]
+struct PreparedSurface {
+    bounds: crate::Bounds<crate::ScaledPixels>,
+    content_mask: crate::Bounds<crate::ScaledPixels>,
+    format: u32,
+    y_texture: gpu::Texture,
+    cb_cr_texture: gpu::Texture,
+    cr_texture: Option<gpu::Texture>,
+    t_y: gpu::TextureView,
+    t_cb_cr: gpu::TextureView,
+    t_cr: gpu::TextureView,
+    t_cr_owned: Option<gpu::TextureView>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -682,6 +699,192 @@ impl BladeRenderer {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
+    fn prepare_surfaces(&mut self, scene: &Scene) -> Vec<PreparedSurface> {
+        use crate::YuvFormat;
+
+        let surfaces = &scene.surfaces;
+        let mut prepared = Vec::with_capacity(surfaces.len());
+
+        if surfaces.is_empty() {
+            return prepared;
+        }
+
+        {
+            let mut transfers = self.command_encoder.transfer("yuv surface upload");
+
+            for surface in surfaces {
+                let frame = &surface.frame_data;
+                let (chroma_width, chroma_height) = (frame.width / 2, frame.height / 2);
+
+                let y_texture = self.gpu.create_texture(gpu::TextureDesc {
+                    name: "yuv_y_plane",
+                    format: gpu::TextureFormat::R8Unorm,
+                    size: gpu::Extent {
+                        width: frame.width,
+                        height: frame.height,
+                        depth: 1,
+                    },
+                    array_layer_count: 1,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: gpu::TextureDimension::D2,
+                    usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
+                    external: None,
+                });
+
+                let uv_format = match frame.format {
+                    YuvFormat::Nv12 => gpu::TextureFormat::Rg8Unorm,
+                    YuvFormat::I420 => gpu::TextureFormat::R8Unorm,
+                };
+
+                let cb_cr_texture = self.gpu.create_texture(gpu::TextureDesc {
+                    name: "yuv_cb_cr_plane",
+                    format: uv_format,
+                    size: gpu::Extent {
+                        width: chroma_width,
+                        height: chroma_height,
+                        depth: 1,
+                    },
+                    array_layer_count: 1,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: gpu::TextureDimension::D2,
+                    usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
+                    external: None,
+                });
+
+                let cr_texture = if frame.format == YuvFormat::I420 {
+                    Some(self.gpu.create_texture(gpu::TextureDesc {
+                        name: "yuv_cr_plane",
+                        format: gpu::TextureFormat::R8Unorm,
+                        size: gpu::Extent {
+                            width: chroma_width,
+                            height: chroma_height,
+                            depth: 1,
+                        },
+                        array_layer_count: 1,
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: gpu::TextureDimension::D2,
+                        usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
+                        external: None,
+                    }))
+                } else {
+                    None
+                };
+
+                let y_staging = self.instance_belt.alloc_bytes(&frame.y_plane, &self.gpu);
+                transfers.copy_buffer_to_texture(
+                    y_staging,
+                    frame.y_stride,
+                    gpu::TexturePiece {
+                        texture: y_texture,
+                        mip_level: 0,
+                        array_layer: 0,
+                        origin: [0, 0, 0],
+                    },
+                    gpu::Extent {
+                        width: frame.width,
+                        height: frame.height,
+                        depth: 1,
+                    },
+                );
+
+                let uv_staging = self.instance_belt.alloc_bytes(&frame.u_plane, &self.gpu);
+                transfers.copy_buffer_to_texture(
+                    uv_staging,
+                    frame.u_stride,
+                    gpu::TexturePiece {
+                        texture: cb_cr_texture,
+                        mip_level: 0,
+                        array_layer: 0,
+                        origin: [0, 0, 0],
+                    },
+                    gpu::Extent {
+                        width: chroma_width,
+                        height: chroma_height,
+                        depth: 1,
+                    },
+                );
+
+                if let (Some(cr_tex), Some(v_plane)) = (cr_texture, &frame.v_plane) {
+                    let v_staging = self.instance_belt.alloc_bytes(v_plane, &self.gpu);
+                    transfers.copy_buffer_to_texture(
+                        v_staging,
+                        frame.v_stride.unwrap_or(chroma_width),
+                        gpu::TexturePiece {
+                            texture: cr_tex,
+                            mip_level: 0,
+                            array_layer: 0,
+                            origin: [0, 0, 0],
+                        },
+                        gpu::Extent {
+                            width: chroma_width,
+                            height: chroma_height,
+                            depth: 1,
+                        },
+                    );
+                }
+
+                let t_y = self.gpu.create_texture_view(
+                    y_texture,
+                    gpu::TextureViewDesc {
+                        name: "yuv_y_view",
+                        format: gpu::TextureFormat::R8Unorm,
+                        dimension: gpu::ViewDimension::D2,
+                        subresources: &Default::default(),
+                    },
+                );
+
+                let t_cb_cr = self.gpu.create_texture_view(
+                    cb_cr_texture,
+                    gpu::TextureViewDesc {
+                        name: "yuv_cb_cr_view",
+                        format: uv_format,
+                        dimension: gpu::ViewDimension::D2,
+                        subresources: &Default::default(),
+                    },
+                );
+
+                let (t_cr, t_cr_owned) = if let Some(cr_tex) = cr_texture {
+                    let view = self.gpu.create_texture_view(
+                        cr_tex,
+                        gpu::TextureViewDesc {
+                            name: "yuv_cr_view",
+                            format: gpu::TextureFormat::R8Unorm,
+                            dimension: gpu::ViewDimension::D2,
+                            subresources: &Default::default(),
+                        },
+                    );
+                    (view, Some(view))
+                } else {
+                    (t_cb_cr, None)
+                };
+
+                let format_flag = match frame.format {
+                    YuvFormat::Nv12 => 0u32,
+                    YuvFormat::I420 => 1u32,
+                };
+
+                prepared.push(PreparedSurface {
+                    bounds: surface.bounds,
+                    content_mask: surface.content_mask.bounds,
+                    format: format_flag,
+                    y_texture,
+                    cb_cr_texture,
+                    cr_texture,
+                    t_y,
+                    t_cb_cr,
+                    t_cr,
+                    t_cr_owned,
+                });
+            }
+        }
+
+        prepared
+    }
+
     pub fn draw(&mut self, scene: &Scene) {
         self.command_encoder.start();
         self.atlas.before_frame(&mut self.command_encoder);
@@ -703,6 +906,11 @@ impl BladeRenderer {
             },
             pad: 0,
         };
+
+        #[cfg(not(target_os = "macos"))]
+        let prepared_surfaces = self.prepare_surfaces(scene);
+        #[cfg(not(target_os = "macos"))]
+        let mut surface_index = 0usize;
 
         let mut pass = self.command_encoder.render(
             "main",
@@ -878,16 +1086,41 @@ impl BladeRenderer {
                     );
                     encoder.draw(0, 4, 0, sprites.len() as u32);
                 }
+                #[cfg(not(target_os = "macos"))]
                 PrimitiveBatch::Surfaces(surfaces) => {
-                    let mut _encoder = pass.with(&self.pipelines.surfaces);
+                    let mut encoder = pass.with(&self.pipelines.surfaces);
+
+                    for prepared in prepared_surfaces
+                        .iter()
+                        .skip(surface_index)
+                        .take(surfaces.len())
+                    {
+                        encoder.bind(
+                            0,
+                            &ShaderSurfacesData {
+                                globals,
+                                surface_locals: SurfaceParams {
+                                    bounds: prepared.bounds.into(),
+                                    content_mask: prepared.content_mask.into(),
+                                    format: prepared.format,
+                                    pad: 0,
+                                },
+                                t_y: prepared.t_y,
+                                t_cb_cr: prepared.t_cb_cr,
+                                t_cr: prepared.t_cr,
+                                s_surface: self.atlas_sampler,
+                            },
+                        );
+
+                        encoder.draw(0, 4, 0, 1);
+                    }
+                    surface_index += surfaces.len();
+                }
+                #[cfg(target_os = "macos")]
+                PrimitiveBatch::Surfaces(surfaces) => {
+                    let mut encoder = pass.with(&self.pipelines.surfaces);
 
                     for surface in surfaces {
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            let _ = surface;
-                            continue;
-                        };
-
                         #[cfg(target_os = "macos")]
                         {
                             let (t_y, t_cb_cr) = unsafe {
@@ -949,27 +1182,44 @@ impl BladeRenderer {
                                 )
                             };
 
-                            _encoder.bind(
+                            encoder.bind(
                                 0,
                                 &ShaderSurfacesData {
                                     globals,
                                     surface_locals: SurfaceParams {
                                         bounds: surface.bounds.into(),
                                         content_mask: surface.content_mask.bounds.into(),
+                                        format: 0,
+                                        pad: 0,
                                     },
                                     t_y,
                                     t_cb_cr,
+                                    t_cr: t_cb_cr,
                                     s_surface: self.atlas_sampler,
                                 },
                             );
 
-                            _encoder.draw(0, 4, 0, 1);
+                            encoder.draw(0, 4, 0, 1);
                         }
                     }
                 }
             }
         }
         drop(pass);
+
+        #[cfg(not(target_os = "macos"))]
+        for prepared in prepared_surfaces {
+            self.gpu.destroy_texture_view(prepared.t_y);
+            self.gpu.destroy_texture_view(prepared.t_cb_cr);
+            if let Some(t_cr) = prepared.t_cr_owned {
+                self.gpu.destroy_texture_view(t_cr);
+            }
+            self.gpu.destroy_texture(prepared.y_texture);
+            self.gpu.destroy_texture(prepared.cb_cr_texture);
+            if let Some(cr_tex) = prepared.cr_texture {
+                self.gpu.destroy_texture(cr_tex);
+            }
+        }
 
         self.command_encoder.present(frame);
         let sync_point = self.gpu.submit(&mut self.command_encoder);

@@ -3400,6 +3400,26 @@ impl Window {
         });
     }
 
+    /// Paint a YUV surface into the scene for the next frame at the current z-index.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    #[cfg(not(target_os = "macos"))]
+    pub fn paint_surface(&mut self, bounds: Bounds<Pixels>, frame_data: crate::YuvFrameData) {
+        use crate::PaintSurface;
+
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let bounds = bounds.scale(scale_factor);
+        let content_mask = self.content_mask().scale(scale_factor);
+        self.next_frame.scene.insert_primitive(PaintSurface {
+            order: 0,
+            bounds,
+            content_mask,
+            frame_data,
+        });
+    }
+
     /// Removes an image from the sprite atlas.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         for frame_index in 0..data.frame_count() {

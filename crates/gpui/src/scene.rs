@@ -13,7 +13,49 @@ use std::{
     iter::Peekable,
     ops::{Add, Range, Sub},
     slice,
+    sync::Arc,
 };
+
+/// YUV pixel format for video surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(not(target_os = "macos"))]
+pub enum YuvFormat {
+    /// NV12: Y plane + interleaved UV plane (2 planes total).
+    /// This is the most common format from hardware video decoders.
+    Nv12,
+    /// I420: Y plane + U plane + V plane (3 separate planes).
+    /// Common in software decoders and raw video processing.
+    I420,
+}
+
+/// YUV frame data for video rendering on non-macOS platforms.
+///
+/// This structure holds the raw YUV plane data that will be uploaded
+/// to GPU textures and converted to RGB by the shader.
+#[derive(Clone, Debug)]
+#[cfg(not(target_os = "macos"))]
+pub struct YuvFrameData {
+    /// The YUV pixel format of this frame.
+    pub format: YuvFormat,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Y (luma) plane data. Size: width * height bytes.
+    pub y_plane: Arc<[u8]>,
+    /// For NV12: interleaved UV plane (width * height / 2 bytes).
+    /// For I420: U (Cb) plane only (width/2 * height/2 bytes).
+    pub u_plane: Arc<[u8]>,
+    /// V (Cr) plane for I420 format only (width/2 * height/2 bytes).
+    /// Should be None for NV12 format.
+    pub v_plane: Option<Arc<[u8]>>,
+    /// Bytes per row for the Y plane (may include padding).
+    pub y_stride: u32,
+    /// Bytes per row for the U/UV plane (may include padding).
+    pub u_stride: u32,
+    /// Bytes per row for the V plane (I420 only).
+    pub v_stride: Option<u32>,
+}
 
 #[allow(non_camel_case_types, unused)]
 pub(crate) type PathVertex_ScaledPixels = PathVertex<ScaledPixels>;
@@ -726,6 +768,8 @@ pub(crate) struct PaintSurface {
     pub content_mask: ContentMask<ScaledPixels>,
     #[cfg(target_os = "macos")]
     pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
+    #[cfg(not(target_os = "macos"))]
+    pub frame_data: YuvFrameData,
 }
 
 impl From<PaintSurface> for Primitive {
