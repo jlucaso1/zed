@@ -130,6 +130,16 @@ struct PreparedSurface {
     bounds: crate::Bounds<crate::ScaledPixels>,
     content_mask: crate::Bounds<crate::ScaledPixels>,
     format: u32,
+    t_y: gpu::TextureView,
+    t_cb_cr: gpu::TextureView,
+    t_cr: gpu::TextureView,
+}
+
+#[cfg(not(target_os = "macos"))]
+struct CachedYuvTextures {
+    width: u32,
+    height: u32,
+    format: crate::YuvFormat,
     y_texture: gpu::Texture,
     cb_cr_texture: gpu::Texture,
     cr_texture: Option<gpu::Texture>,
@@ -400,6 +410,8 @@ pub struct BladeRenderer {
     path_intermediate_msaa_texture: Option<gpu::Texture>,
     path_intermediate_msaa_texture_view: Option<gpu::TextureView>,
     rendering_parameters: RenderingParameters,
+    #[cfg(not(target_os = "macos"))]
+    yuv_texture_cache: Option<CachedYuvTextures>,
 }
 
 impl BladeRenderer {
@@ -486,6 +498,8 @@ impl BladeRenderer {
             path_intermediate_msaa_texture,
             path_intermediate_msaa_texture_view,
             rendering_parameters,
+            #[cfg(not(target_os = "macos"))]
+            yuv_texture_cache: None,
         })
     }
 
@@ -682,6 +696,8 @@ impl BladeRenderer {
 
     pub fn destroy(&mut self) {
         self.wait_for_gpu();
+        #[cfg(not(target_os = "macos"))]
+        self.destroy_yuv_cache();
         self.atlas.destroy();
         self.gpu.destroy_sampler(self.atlas_sampler);
         self.instance_belt.destroy(&self.gpu);
@@ -700,47 +716,80 @@ impl BladeRenderer {
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn prepare_surfaces(&mut self, scene: &Scene) -> Vec<PreparedSurface> {
+    fn destroy_yuv_cache(&mut self) {
+        if let Some(cache) = self.yuv_texture_cache.take() {
+            self.gpu.destroy_texture_view(cache.t_y);
+            self.gpu.destroy_texture_view(cache.t_cb_cr);
+            if let Some(t_cr) = cache.t_cr_owned {
+                self.gpu.destroy_texture_view(t_cr);
+            }
+            self.gpu.destroy_texture(cache.y_texture);
+            self.gpu.destroy_texture(cache.cb_cr_texture);
+            if let Some(cr_tex) = cache.cr_texture {
+                self.gpu.destroy_texture(cr_tex);
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn ensure_yuv_cache(&mut self, frame: &crate::YuvFrameData) {
         use crate::YuvFormat;
 
-        let surfaces = &scene.surfaces;
-        let mut prepared = Vec::with_capacity(surfaces.len());
+        let needs_recreate = match &self.yuv_texture_cache {
+            Some(cache) => {
+                cache.width != frame.width
+                    || cache.height != frame.height
+                    || cache.format != frame.format
+            }
+            None => true,
+        };
 
-        if surfaces.is_empty() {
-            return prepared;
-        }
+        if needs_recreate {
+            self.destroy_yuv_cache();
 
-        {
-            let mut transfers = self.command_encoder.transfer("yuv surface upload");
+            let (chroma_width, chroma_height) = (frame.width / 2, frame.height / 2);
 
-            for surface in surfaces {
-                let frame = &surface.frame_data;
-                let (chroma_width, chroma_height) = (frame.width / 2, frame.height / 2);
+            let y_texture = self.gpu.create_texture(gpu::TextureDesc {
+                name: "yuv_y_plane",
+                format: gpu::TextureFormat::R8Unorm,
+                size: gpu::Extent {
+                    width: frame.width,
+                    height: frame.height,
+                    depth: 1,
+                },
+                array_layer_count: 1,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: gpu::TextureDimension::D2,
+                usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
+                external: None,
+            });
 
-                let y_texture = self.gpu.create_texture(gpu::TextureDesc {
-                    name: "yuv_y_plane",
+            let uv_format = match frame.format {
+                YuvFormat::Nv12 => gpu::TextureFormat::Rg8Unorm,
+                YuvFormat::I420 => gpu::TextureFormat::R8Unorm,
+            };
+
+            let cb_cr_texture = self.gpu.create_texture(gpu::TextureDesc {
+                name: "yuv_cb_cr_plane",
+                format: uv_format,
+                size: gpu::Extent {
+                    width: chroma_width,
+                    height: chroma_height,
+                    depth: 1,
+                },
+                array_layer_count: 1,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: gpu::TextureDimension::D2,
+                usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
+                external: None,
+            });
+
+            let cr_texture = if frame.format == YuvFormat::I420 {
+                Some(self.gpu.create_texture(gpu::TextureDesc {
+                    name: "yuv_cr_plane",
                     format: gpu::TextureFormat::R8Unorm,
-                    size: gpu::Extent {
-                        width: frame.width,
-                        height: frame.height,
-                        depth: 1,
-                    },
-                    array_layer_count: 1,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: gpu::TextureDimension::D2,
-                    usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
-                    external: None,
-                });
-
-                let uv_format = match frame.format {
-                    YuvFormat::Nv12 => gpu::TextureFormat::Rg8Unorm,
-                    YuvFormat::I420 => gpu::TextureFormat::R8Unorm,
-                };
-
-                let cb_cr_texture = self.gpu.create_texture(gpu::TextureDesc {
-                    name: "yuv_cb_cr_plane",
-                    format: uv_format,
                     size: gpu::Extent {
                         width: chroma_width,
                         height: chroma_height,
@@ -752,34 +801,101 @@ impl BladeRenderer {
                     dimension: gpu::TextureDimension::D2,
                     usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
                     external: None,
-                });
+                }))
+            } else {
+                None
+            };
 
-                let cr_texture = if frame.format == YuvFormat::I420 {
-                    Some(self.gpu.create_texture(gpu::TextureDesc {
-                        name: "yuv_cr_plane",
+            let t_y = self.gpu.create_texture_view(
+                y_texture,
+                gpu::TextureViewDesc {
+                    name: "yuv_y_view",
+                    format: gpu::TextureFormat::R8Unorm,
+                    dimension: gpu::ViewDimension::D2,
+                    subresources: &Default::default(),
+                },
+            );
+
+            let t_cb_cr = self.gpu.create_texture_view(
+                cb_cr_texture,
+                gpu::TextureViewDesc {
+                    name: "yuv_cb_cr_view",
+                    format: uv_format,
+                    dimension: gpu::ViewDimension::D2,
+                    subresources: &Default::default(),
+                },
+            );
+
+            let (t_cr, t_cr_owned) = if let Some(cr_tex) = cr_texture {
+                let view = self.gpu.create_texture_view(
+                    cr_tex,
+                    gpu::TextureViewDesc {
+                        name: "yuv_cr_view",
                         format: gpu::TextureFormat::R8Unorm,
-                        size: gpu::Extent {
-                            width: chroma_width,
-                            height: chroma_height,
-                            depth: 1,
-                        },
-                        array_layer_count: 1,
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: gpu::TextureDimension::D2,
-                        usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
-                        external: None,
-                    }))
-                } else {
-                    None
-                };
+                        dimension: gpu::ViewDimension::D2,
+                        subresources: &Default::default(),
+                    },
+                );
+                (view, Some(view))
+            } else {
+                (t_cb_cr, None)
+            };
+
+            self.yuv_texture_cache = Some(CachedYuvTextures {
+                width: frame.width,
+                height: frame.height,
+                format: frame.format,
+                y_texture,
+                cb_cr_texture,
+                cr_texture,
+                t_y,
+                t_cb_cr,
+                t_cr,
+                t_cr_owned,
+            });
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn prepare_surfaces(&mut self, scene: &Scene) -> Vec<PreparedSurface> {
+        use crate::YuvFormat;
+
+        let surfaces = &scene.surfaces;
+        let mut prepared = Vec::with_capacity(surfaces.len());
+
+        if surfaces.is_empty() {
+            return prepared;
+        }
+
+        // Cache based on the first surface's dimensions/format.
+        // This works well for single-video use cases.
+        let first_frame = &surfaces[0].frame_data;
+        self.ensure_yuv_cache(first_frame);
+
+        {
+            let mut transfers = self.command_encoder.transfer("yuv surface upload");
+
+            for surface in surfaces {
+                let frame = &surface.frame_data;
+                let cache = self.yuv_texture_cache.as_ref().unwrap();
+
+                // Skip surfaces that don't match the cached dimensions/format.
+                // This prevents out-of-bounds writes to the cached textures.
+                if frame.width != cache.width
+                    || frame.height != cache.height
+                    || frame.format != cache.format
+                {
+                    continue;
+                }
+
+                let (chroma_width, chroma_height) = (frame.width / 2, frame.height / 2);
 
                 let y_staging = self.instance_belt.alloc_bytes(&frame.y_plane, &self.gpu);
                 transfers.copy_buffer_to_texture(
                     y_staging,
                     frame.y_stride,
                     gpu::TexturePiece {
-                        texture: y_texture,
+                        texture: cache.y_texture,
                         mip_level: 0,
                         array_layer: 0,
                         origin: [0, 0, 0],
@@ -796,7 +912,7 @@ impl BladeRenderer {
                     uv_staging,
                     frame.u_stride,
                     gpu::TexturePiece {
-                        texture: cb_cr_texture,
+                        texture: cache.cb_cr_texture,
                         mip_level: 0,
                         array_layer: 0,
                         origin: [0, 0, 0],
@@ -808,7 +924,7 @@ impl BladeRenderer {
                     },
                 );
 
-                if let (Some(cr_tex), Some(v_plane)) = (cr_texture, &frame.v_plane) {
+                if let (Some(cr_tex), Some(v_plane)) = (cache.cr_texture, &frame.v_plane) {
                     let v_staging = self.instance_belt.alloc_bytes(v_plane, &self.gpu);
                     transfers.copy_buffer_to_texture(
                         v_staging,
@@ -827,41 +943,6 @@ impl BladeRenderer {
                     );
                 }
 
-                let t_y = self.gpu.create_texture_view(
-                    y_texture,
-                    gpu::TextureViewDesc {
-                        name: "yuv_y_view",
-                        format: gpu::TextureFormat::R8Unorm,
-                        dimension: gpu::ViewDimension::D2,
-                        subresources: &Default::default(),
-                    },
-                );
-
-                let t_cb_cr = self.gpu.create_texture_view(
-                    cb_cr_texture,
-                    gpu::TextureViewDesc {
-                        name: "yuv_cb_cr_view",
-                        format: uv_format,
-                        dimension: gpu::ViewDimension::D2,
-                        subresources: &Default::default(),
-                    },
-                );
-
-                let (t_cr, t_cr_owned) = if let Some(cr_tex) = cr_texture {
-                    let view = self.gpu.create_texture_view(
-                        cr_tex,
-                        gpu::TextureViewDesc {
-                            name: "yuv_cr_view",
-                            format: gpu::TextureFormat::R8Unorm,
-                            dimension: gpu::ViewDimension::D2,
-                            subresources: &Default::default(),
-                        },
-                    );
-                    (view, Some(view))
-                } else {
-                    (t_cb_cr, None)
-                };
-
                 let format_flag = match frame.format {
                     YuvFormat::Nv12 => 0u32,
                     YuvFormat::I420 => 1u32,
@@ -871,13 +952,9 @@ impl BladeRenderer {
                     bounds: surface.bounds,
                     content_mask: surface.content_mask.bounds,
                     format: format_flag,
-                    y_texture,
-                    cb_cr_texture,
-                    cr_texture,
-                    t_y,
-                    t_cb_cr,
-                    t_cr,
-                    t_cr_owned,
+                    t_y: cache.t_y,
+                    t_cb_cr: cache.t_cb_cr,
+                    t_cr: cache.t_cr,
                 });
             }
         }
@@ -1215,28 +1292,6 @@ impl BladeRenderer {
         self.atlas.after_frame(&sync_point);
 
         self.wait_for_gpu();
-
-        #[cfg(not(target_os = "macos"))]
-        if !prepared_surfaces.is_empty() {
-            // Wait for the CURRENT frame's work to complete before destroying textures.
-            // wait_for_gpu() above only waits for the previous frame's sync point.
-            if !self.gpu.wait_for(&sync_point, MAX_FRAME_TIME_MS) {
-                log::error!("GPU hung while waiting for surface textures");
-            }
-            for prepared in prepared_surfaces {
-                self.gpu.destroy_texture_view(prepared.t_y);
-                self.gpu.destroy_texture_view(prepared.t_cb_cr);
-                if let Some(t_cr) = prepared.t_cr_owned {
-                    self.gpu.destroy_texture_view(t_cr);
-                }
-                self.gpu.destroy_texture(prepared.y_texture);
-                self.gpu.destroy_texture(prepared.cb_cr_texture);
-                if let Some(cr_tex) = prepared.cr_texture {
-                    self.gpu.destroy_texture(cr_tex);
-                }
-            }
-        }
-
         self.last_sync_point = Some(sync_point);
     }
 
