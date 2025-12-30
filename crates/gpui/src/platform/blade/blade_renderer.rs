@@ -874,17 +874,25 @@ impl BladeRenderer {
         }
 
         for surface in surfaces {
-            let frame = &surface.frame_data;
-            let key = self.get_or_create_yuv_cache(frame);
+            self.get_or_create_yuv_cache(&surface.frame_data);
+        }
 
-            let Some(cache) = self.yuv_texture_caches.get(&key) else {
-                continue;
-            };
+        {
+            let mut transfers = self.command_encoder.transfer("yuv surface upload");
 
-            let (chroma_width, chroma_height) = (frame.width / 2, frame.height / 2);
+            for surface in surfaces {
+                let frame = &surface.frame_data;
+                let key = YuvCacheKey {
+                    width: frame.width,
+                    height: frame.height,
+                    format: frame.format,
+                };
 
-            {
-                let mut transfers = self.command_encoder.transfer("yuv surface upload");
+                let Some(cache) = self.yuv_texture_caches.get(&key) else {
+                    continue;
+                };
+
+                let (chroma_width, chroma_height) = (frame.width / 2, frame.height / 2);
 
                 let y_staging = self.instance_belt.alloc_bytes(&frame.y_plane, &self.gpu);
                 transfers.copy_buffer_to_texture(
@@ -938,21 +946,21 @@ impl BladeRenderer {
                         },
                     );
                 }
+
+                let format_flag = match frame.format {
+                    YuvFormat::Nv12 => 0u32,
+                    YuvFormat::I420 => 1u32,
+                };
+
+                prepared.push(PreparedSurface {
+                    bounds: surface.bounds,
+                    content_mask: surface.content_mask.bounds,
+                    format: format_flag,
+                    t_y: cache.t_y,
+                    t_cb_cr: cache.t_cb_cr,
+                    t_cr: cache.t_cr,
+                });
             }
-
-            let format_flag = match frame.format {
-                YuvFormat::Nv12 => 0u32,
-                YuvFormat::I420 => 1u32,
-            };
-
-            prepared.push(PreparedSurface {
-                bounds: surface.bounds,
-                content_mask: surface.content_mask.bounds,
-                format: format_flag,
-                t_y: cache.t_y,
-                t_cb_cr: cache.t_cb_cr,
-                t_cr: cache.t_cr,
-            });
         }
 
         prepared
