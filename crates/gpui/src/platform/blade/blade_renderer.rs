@@ -1215,21 +1215,29 @@ impl BladeRenderer {
         self.atlas.after_frame(&sync_point);
 
         self.wait_for_gpu();
-        self.last_sync_point = Some(sync_point);
 
         #[cfg(not(target_os = "macos"))]
-        for prepared in prepared_surfaces {
-            self.gpu.destroy_texture_view(prepared.t_y);
-            self.gpu.destroy_texture_view(prepared.t_cb_cr);
-            if let Some(t_cr) = prepared.t_cr_owned {
-                self.gpu.destroy_texture_view(t_cr);
+        if !prepared_surfaces.is_empty() {
+            // Wait for the CURRENT frame's work to complete before destroying textures.
+            // wait_for_gpu() above only waits for the previous frame's sync point.
+            if !self.gpu.wait_for(&sync_point, MAX_FRAME_TIME_MS) {
+                log::error!("GPU hung while waiting for surface textures");
             }
-            self.gpu.destroy_texture(prepared.y_texture);
-            self.gpu.destroy_texture(prepared.cb_cr_texture);
-            if let Some(cr_tex) = prepared.cr_texture {
-                self.gpu.destroy_texture(cr_tex);
+            for prepared in prepared_surfaces {
+                self.gpu.destroy_texture_view(prepared.t_y);
+                self.gpu.destroy_texture_view(prepared.t_cb_cr);
+                if let Some(t_cr) = prepared.t_cr_owned {
+                    self.gpu.destroy_texture_view(t_cr);
+                }
+                self.gpu.destroy_texture(prepared.y_texture);
+                self.gpu.destroy_texture(prepared.cb_cr_texture);
+                if let Some(cr_tex) = prepared.cr_texture {
+                    self.gpu.destroy_texture(cr_tex);
+                }
             }
         }
+
+        self.last_sync_point = Some(sync_point);
     }
 
     /// Renders the scene to a texture and returns the pixel data as an RGBA image.
