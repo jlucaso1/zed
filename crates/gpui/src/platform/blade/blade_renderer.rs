@@ -863,15 +863,9 @@ impl BladeRenderer {
         let surfaces = &scene.surfaces;
         let mut prepared = Vec::with_capacity(surfaces.len());
 
-        let Some(first_surface) = surfaces.first() else {
+        if surfaces.is_empty() {
             return prepared;
-        };
-
-        self.ensure_yuv_cache(&first_surface.frame_data);
-
-        let Some(cache) = self.yuv_texture_cache.as_ref() else {
-            return prepared;
-        };
+        }
 
         {
             let mut transfers = self.command_encoder.transfer("yuv surface upload");
@@ -879,12 +873,24 @@ impl BladeRenderer {
             for surface in surfaces {
                 let frame = &surface.frame_data;
 
-                if frame.width != cache.width
-                    || frame.height != cache.height
-                    || frame.format != cache.format
-                {
-                    continue;
+                let needs_recreate = match &self.yuv_texture_cache {
+                    Some(cache) => {
+                        cache.width != frame.width
+                            || cache.height != frame.height
+                            || cache.format != frame.format
+                    }
+                    None => true,
+                };
+
+                if needs_recreate {
+                    drop(transfers);
+                    self.ensure_yuv_cache(frame);
+                    transfers = self.command_encoder.transfer("yuv surface upload");
                 }
+
+                let Some(cache) = self.yuv_texture_cache.as_ref() else {
+                    continue;
+                };
 
                 let (chroma_width, chroma_height) = (frame.width / 2, frame.height / 2);
 

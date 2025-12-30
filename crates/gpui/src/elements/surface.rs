@@ -255,4 +255,61 @@ mod tests {
         assert_eq!(cloned.format, frame.format);
         assert!(Arc::ptr_eq(&cloned.y_plane, &frame.y_plane));
     }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_multiple_video_dimensions() {
+        let video1 = create_test_nv12_frame(474, 850);
+        let video2 = create_test_nv12_frame(848, 384);
+
+        assert_ne!(video1.width, video2.width);
+        assert_ne!(video1.height, video2.height);
+
+        assert_eq!(video1.y_plane.len(), 474 * 850);
+        assert_eq!(video2.y_plane.len(), 848 * 384);
+
+        let surface1 = surface(video1);
+        let surface2 = surface(video2);
+
+        match (&surface1.source, &surface2.source) {
+            (SurfaceSource::Yuv(f1), SurfaceSource::Yuv(f2)) => {
+                assert_eq!(f1.width, 474);
+                assert_eq!(f1.height, 850);
+                assert_eq!(f2.width, 848);
+                assert_eq!(f2.height, 384);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_different_formats_same_dimensions() {
+        let nv12_frame = create_test_nv12_frame(1920, 1080);
+        let i420_frame = create_test_i420_frame(1920, 1080);
+
+        assert_eq!(nv12_frame.width, i420_frame.width);
+        assert_eq!(nv12_frame.height, i420_frame.height);
+        assert_ne!(nv12_frame.format, i420_frame.format);
+
+        assert!(nv12_frame.v_plane.is_none());
+        assert!(i420_frame.v_plane.is_some());
+
+        assert_eq!(nv12_frame.u_plane.len(), 1920 * 1080 / 2);
+        assert_eq!(i420_frame.u_plane.len(), 1920 * 1080 / 4);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_yuv_frame_equality() {
+        let frame1 = create_test_nv12_frame(640, 480);
+        let frame2 = create_test_nv12_frame(640, 480);
+        let frame3 = create_test_nv12_frame(320, 240);
+
+        assert_eq!(frame1.width, frame2.width);
+        assert_eq!(frame1.height, frame2.height);
+        assert_eq!(frame1.format, frame2.format);
+
+        assert_ne!(frame1.width, frame3.width);
+        assert_ne!(frame1.height, frame3.height);
+    }
 }
