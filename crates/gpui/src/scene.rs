@@ -17,7 +17,7 @@ use std::{
 };
 
 /// YUV pixel format.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg(not(target_os = "macos"))]
 pub enum YuvFormat {
     /// NV12: Y plane + interleaved UV plane.
