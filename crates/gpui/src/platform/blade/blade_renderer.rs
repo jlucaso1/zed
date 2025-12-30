@@ -1207,6 +1207,16 @@ impl BladeRenderer {
         }
         drop(pass);
 
+        self.command_encoder.present(frame);
+        let sync_point = self.gpu.submit(&mut self.command_encoder);
+
+        profiling::scope!("finish");
+        self.instance_belt.flush(&sync_point);
+        self.atlas.after_frame(&sync_point);
+
+        self.wait_for_gpu();
+        self.last_sync_point = Some(sync_point);
+
         #[cfg(not(target_os = "macos"))]
         for prepared in prepared_surfaces {
             self.gpu.destroy_texture_view(prepared.t_y);
@@ -1220,16 +1230,6 @@ impl BladeRenderer {
                 self.gpu.destroy_texture(cr_tex);
             }
         }
-
-        self.command_encoder.present(frame);
-        let sync_point = self.gpu.submit(&mut self.command_encoder);
-
-        profiling::scope!("finish");
-        self.instance_belt.flush(&sync_point);
-        self.atlas.after_frame(&sync_point);
-
-        self.wait_for_gpu();
-        self.last_sync_point = Some(sync_point);
     }
 
     /// Renders the scene to a texture and returns the pixel data as an RGBA image.
