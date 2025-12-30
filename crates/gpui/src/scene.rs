@@ -16,44 +16,37 @@ use std::{
     sync::Arc,
 };
 
-/// YUV pixel format for video surfaces.
+/// YUV pixel format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg(not(target_os = "macos"))]
 pub enum YuvFormat {
-    /// NV12: Y plane + interleaved UV plane (2 planes total).
-    /// This is the most common format from hardware video decoders.
+    /// NV12: Y plane + interleaved UV plane.
     Nv12,
-    /// I420: Y plane + U plane + V plane (3 separate planes).
-    /// Common in software decoders and raw video processing.
+    /// I420: Y plane + U plane + V plane.
     I420,
 }
 
-/// YUV frame data for video rendering on non-macOS platforms.
-///
-/// This structure holds the raw YUV plane data that will be uploaded
-/// to GPU textures and converted to RGB by the shader.
-#[derive(Clone, Debug)]
+/// YUV frame data for video rendering.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(not(target_os = "macos"))]
 pub struct YuvFrameData {
-    /// The YUV pixel format of this frame.
+    /// The pixel format.
     pub format: YuvFormat,
     /// Frame width in pixels.
     pub width: u32,
     /// Frame height in pixels.
     pub height: u32,
-    /// Y (luma) plane data. Size: width * height bytes.
+    /// Y (luma) plane data.
     pub y_plane: Arc<[u8]>,
-    /// For NV12: interleaved UV plane (width * height / 2 bytes).
-    /// For I420: U (Cb) plane only (width/2 * height/2 bytes).
+    /// U/UV plane data.
     pub u_plane: Arc<[u8]>,
-    /// V (Cr) plane for I420 format only (width/2 * height/2 bytes).
-    /// Should be None for NV12 format.
+    /// V plane data (I420 only).
     pub v_plane: Option<Arc<[u8]>>,
-    /// Bytes per row for the Y plane (may include padding).
+    /// Y plane stride (bytes per row).
     pub y_stride: u32,
-    /// Bytes per row for the U/UV plane (may include padding).
+    /// U/UV plane stride.
     pub u_stride: u32,
-    /// Bytes per row for the V plane (I420 only).
+    /// V plane stride (I420 only).
     pub v_stride: Option<u32>,
 }
 

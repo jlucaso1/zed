@@ -863,24 +863,22 @@ impl BladeRenderer {
         let surfaces = &scene.surfaces;
         let mut prepared = Vec::with_capacity(surfaces.len());
 
-        if surfaces.is_empty() {
+        let Some(first_surface) = surfaces.first() else {
             return prepared;
-        }
+        };
 
-        // Cache based on the first surface's dimensions/format.
-        // This works well for single-video use cases.
-        let first_frame = &surfaces[0].frame_data;
-        self.ensure_yuv_cache(first_frame);
+        self.ensure_yuv_cache(&first_surface.frame_data);
+
+        let Some(cache) = self.yuv_texture_cache.as_ref() else {
+            return prepared;
+        };
 
         {
             let mut transfers = self.command_encoder.transfer("yuv surface upload");
 
             for surface in surfaces {
                 let frame = &surface.frame_data;
-                let cache = self.yuv_texture_cache.as_ref().unwrap();
 
-                // Skip surfaces that don't match the cached dimensions/format.
-                // This prevents out-of-bounds writes to the cached textures.
                 if frame.width != cache.width
                     || frame.height != cache.height
                     || frame.format != cache.format

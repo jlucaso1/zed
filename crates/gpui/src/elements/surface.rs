@@ -9,12 +9,12 @@ use core_video::pixel_buffer::CVPixelBuffer;
 use refineable::Refineable;
 
 /// A source of a surface's content.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SurfaceSource {
     /// A macOS image buffer from CoreVideo.
     #[cfg(target_os = "macos")]
     Surface(CVPixelBuffer),
-    /// YUV frame data for non-macOS platforms.
+    /// YUV frame data.
     #[cfg(not(target_os = "macos"))]
     Yuv(YuvFrameData),
 }
@@ -50,7 +50,7 @@ pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
     }
 }
 
-/// Create a new surface element from YUV frame data.
+/// Create a new surface element.
 #[cfg(not(target_os = "macos"))]
 pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
     Surface {
