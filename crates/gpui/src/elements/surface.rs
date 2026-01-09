@@ -153,8 +153,6 @@ mod tests {
 
     #[cfg(not(target_os = "macos"))]
     use crate::YuvFormat;
-    #[cfg(not(target_os = "macos"))]
-    use std::sync::Arc;
 
     #[cfg(not(target_os = "macos"))]
     fn create_test_nv12_frame(width: u32, height: u32) -> YuvFrameData {
@@ -253,7 +251,10 @@ mod tests {
         assert_eq!(cloned.width, frame.width);
         assert_eq!(cloned.height, frame.height);
         assert_eq!(cloned.format, frame.format);
-        assert!(Arc::ptr_eq(&cloned.y_plane, &frame.y_plane));
+        assert!(std::ptr::eq(
+            cloned.y_plane.as_ref(),
+            frame.y_plane.as_ref()
+        ));
     }
 
     #[test]

@@ -34,6 +34,7 @@ mod profiler;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod queue;
 mod scene;
+mod shared_bytes;
 mod shared_string;
 mod shared_uri;
 mod style;
@@ -95,6 +96,7 @@ pub use profiler::*;
 pub(crate) use queue::{PriorityQueueReceiver, PriorityQueueSender};
 pub use refineable::*;
 pub use scene::*;
+pub use shared_bytes::*;
 pub use shared_string::*;
 pub use shared_uri::*;
 pub use smol::Timer;

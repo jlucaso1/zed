@@ -867,56 +867,70 @@ impl BladeRenderer {
         use crate::YuvFormat;
 
         let surfaces = &scene.surfaces;
-        let mut prepared = Vec::with_capacity(surfaces.len());
-
         if surfaces.is_empty() {
-            return prepared;
+            return Vec::new();
         }
+
+        let mut prepared = Vec::with_capacity(surfaces.len());
 
         for surface in surfaces {
             self.get_or_create_yuv_cache(&surface.frame_data);
         }
 
-        {
-            let mut transfers = self.command_encoder.transfer("yuv surface upload");
+        let mut transfers = self.command_encoder.transfer("yuv surface upload");
 
-            for surface in surfaces {
-                let frame = &surface.frame_data;
-                let key = YuvCacheKey {
+        for surface in surfaces {
+            let frame = &surface.frame_data;
+            let key = YuvCacheKey {
+                width: frame.width,
+                height: frame.height,
+                format: frame.format,
+            };
+
+            let cache = &self.yuv_texture_caches[&key];
+            let (chroma_width, chroma_height) = (frame.width / 2, frame.height / 2);
+
+            let y_staging = self.instance_belt.alloc_bytes(&frame.y_plane, &self.gpu);
+            transfers.copy_buffer_to_texture(
+                y_staging,
+                frame.y_stride,
+                gpu::TexturePiece {
+                    texture: cache.y_texture,
+                    mip_level: 0,
+                    array_layer: 0,
+                    origin: [0, 0, 0],
+                },
+                gpu::Extent {
                     width: frame.width,
                     height: frame.height,
-                    format: frame.format,
-                };
+                    depth: 1,
+                },
+            );
 
-                let Some(cache) = self.yuv_texture_caches.get(&key) else {
-                    continue;
-                };
+            let uv_staging = self.instance_belt.alloc_bytes(&frame.u_plane, &self.gpu);
+            transfers.copy_buffer_to_texture(
+                uv_staging,
+                frame.u_stride,
+                gpu::TexturePiece {
+                    texture: cache.cb_cr_texture,
+                    mip_level: 0,
+                    array_layer: 0,
+                    origin: [0, 0, 0],
+                },
+                gpu::Extent {
+                    width: chroma_width,
+                    height: chroma_height,
+                    depth: 1,
+                },
+            );
 
-                let (chroma_width, chroma_height) = (frame.width / 2, frame.height / 2);
-
-                let y_staging = self.instance_belt.alloc_bytes(&frame.y_plane, &self.gpu);
+            if let (Some(cr_tex), Some(v_plane)) = (cache.cr_texture, &frame.v_plane) {
+                let v_staging = self.instance_belt.alloc_bytes(v_plane, &self.gpu);
                 transfers.copy_buffer_to_texture(
-                    y_staging,
-                    frame.y_stride,
+                    v_staging,
+                    frame.v_stride.unwrap_or(chroma_width),
                     gpu::TexturePiece {
-                        texture: cache.y_texture,
-                        mip_level: 0,
-                        array_layer: 0,
-                        origin: [0, 0, 0],
-                    },
-                    gpu::Extent {
-                        width: frame.width,
-                        height: frame.height,
-                        depth: 1,
-                    },
-                );
-
-                let uv_staging = self.instance_belt.alloc_bytes(&frame.u_plane, &self.gpu);
-                transfers.copy_buffer_to_texture(
-                    uv_staging,
-                    frame.u_stride,
-                    gpu::TexturePiece {
-                        texture: cache.cb_cr_texture,
+                        texture: cr_tex,
                         mip_level: 0,
                         array_layer: 0,
                         origin: [0, 0, 0],
@@ -927,40 +941,21 @@ impl BladeRenderer {
                         depth: 1,
                     },
                 );
-
-                if let (Some(cr_tex), Some(v_plane)) = (cache.cr_texture, &frame.v_plane) {
-                    let v_staging = self.instance_belt.alloc_bytes(v_plane, &self.gpu);
-                    transfers.copy_buffer_to_texture(
-                        v_staging,
-                        frame.v_stride.unwrap_or(chroma_width),
-                        gpu::TexturePiece {
-                            texture: cr_tex,
-                            mip_level: 0,
-                            array_layer: 0,
-                            origin: [0, 0, 0],
-                        },
-                        gpu::Extent {
-                            width: chroma_width,
-                            height: chroma_height,
-                            depth: 1,
-                        },
-                    );
-                }
-
-                let format_flag = match frame.format {
-                    YuvFormat::Nv12 => 0u32,
-                    YuvFormat::I420 => 1u32,
-                };
-
-                prepared.push(PreparedSurface {
-                    bounds: surface.bounds,
-                    content_mask: surface.content_mask.bounds,
-                    format: format_flag,
-                    t_y: cache.t_y,
-                    t_cb_cr: cache.t_cb_cr,
-                    t_cr: cache.t_cr,
-                });
             }
+
+            let format_flag = match frame.format {
+                YuvFormat::Nv12 => 0u32,
+                YuvFormat::I420 => 1u32,
+            };
+
+            prepared.push(PreparedSurface {
+                bounds: surface.bounds,
+                content_mask: surface.content_mask.bounds,
+                format: format_flag,
+                t_y: cache.t_y,
+                t_cb_cr: cache.t_cb_cr,
+                t_cr: cache.t_cr,
+            });
         }
 
         prepared

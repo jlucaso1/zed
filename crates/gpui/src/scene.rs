@@ -6,14 +6,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
-    Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
+    Point, Radians, ScaledPixels, SharedBytes, Size, bounds_tree::BoundsTree, point,
 };
 use std::{
     fmt::Debug,
     iter::Peekable,
     ops::{Add, Range, Sub},
     slice,
-    sync::Arc,
 };
 
 /// YUV pixel format.
@@ -37,11 +36,11 @@ pub struct YuvFrameData {
     /// Frame height in pixels.
     pub height: u32,
     /// Y (luma) plane data.
-    pub y_plane: Arc<[u8]>,
+    pub y_plane: SharedBytes,
     /// U/UV plane data.
-    pub u_plane: Arc<[u8]>,
+    pub u_plane: SharedBytes,
     /// V plane data (I420 only).
-    pub v_plane: Option<Arc<[u8]>>,
+    pub v_plane: Option<SharedBytes>,
     /// Y plane stride (bytes per row).
     pub y_stride: u32,
     /// U/UV plane stride.
